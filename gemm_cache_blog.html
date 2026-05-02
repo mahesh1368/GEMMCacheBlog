@@ -1,0 +1,1254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Taming the Cache: A Journey Through GEMM Optimization on Raspberry Pi 5</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@300;400;600;700&family=Lora:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d0d0f;
+    --bg2: #141418;
+    --bg3: #1a1a20;
+    --border: rgba(255,255,255,0.08);
+    --border-accent: rgba(255,255,255,0.15);
+    --text: #e8e6e0;
+    --text-muted: #7a7870;
+    --text-dim: #4a4845;
+    --accent-teal: #2dcba0;
+    --accent-amber: #f5a623;
+    --accent-coral: #ff6b4a;
+    --accent-blue: #5b9cf6;
+    --accent-purple: #9d7ff5;
+    --font-body: 'Sora', sans-serif;
+    --font-serif: 'Lora', serif;
+    --font-mono: 'IBM Plex Mono', monospace;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.8;
+    font-weight: 300;
+  }
+
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 80px 48px;
+    position: relative;
+    overflow: hidden;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 60% 50% at 70% 40%, rgba(45,203,160,0.06) 0%, transparent 70%),
+      radial-gradient(ellipse 50% 60% at 20% 70%, rgba(91,156,246,0.05) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .hero-grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+  }
+
+  .hero-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent-teal);
+    margin-bottom: 32px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .hero-tag::before {
+    content: '';
+    display: block;
+    width: 32px;
+    height: 1px;
+    background: var(--accent-teal);
+  }
+
+  .hero h1 {
+    font-family: var(--font-body);
+    font-size: clamp(36px, 5vw, 68px);
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    max-width: 840px;
+    margin-bottom: 24px;
+  }
+
+  .hero h1 em {
+    font-style: normal;
+    color: var(--accent-teal);
+  }
+
+  .hero-sub {
+    font-family: var(--font-serif);
+    font-style: italic;
+    color: var(--text-muted);
+    font-size: 18px;
+    max-width: 600px;
+    margin-bottom: 48px;
+  }
+
+  .hero-meta {
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+
+  .meta-chip {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .meta-chip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-teal);
+  }
+
+  .hero-stat-row {
+    display: flex;
+    gap: 24px;
+    margin-top: 56px;
+    flex-wrap: wrap;
+  }
+
+  .hero-stat {
+    flex: 1;
+    min-width: 160px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+  }
+
+  .hero-stat-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .hero-stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .hero-stat-unit {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--text-muted);
+    margin-left: 4px;
+  }
+
+  .hero-stat-sub {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 6px;
+  }
+
+  .improvement-badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--accent-teal);
+    background: rgba(45,203,160,0.1);
+    border: 1px solid rgba(45,203,160,0.2);
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin-top: 6px;
+  }
+
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 48px;
+  }
+
+  .section {
+    padding: 80px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-number {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    margin-bottom: 16px;
+  }
+
+  .section-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  h2 {
+    font-size: clamp(26px, 3.5vw, 40px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin-bottom: 20px;
+  }
+
+  h3 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 40px 0 16px;
+  }
+
+  p {
+    color: var(--text-muted);
+    margin-bottom: 16px;
+    max-width: 680px;
+    font-size: 15px;
+    line-height: 1.85;
+  }
+
+  .callout {
+    background: var(--bg2);
+    border-left: 3px solid var(--accent-teal);
+    border-radius: 0 8px 8px 0;
+    padding: 20px 24px;
+    margin: 32px 0;
+    max-width: 720px;
+  }
+
+  .callout p {
+    margin: 0;
+    font-style: italic;
+    font-family: var(--font-serif);
+    font-size: 15px;
+    color: var(--text);
+  }
+
+  .callout.amber { border-color: var(--accent-amber); }
+  .callout.coral { border-color: var(--accent-coral); }
+  .callout.blue { border-color: var(--accent-blue); }
+  .callout.purple { border-color: var(--accent-purple); }
+
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+    margin: 40px 0;
+    align-items: start;
+  }
+
+  .chart-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+  }
+
+  .chart-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+  }
+
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin: 32px 0;
+  }
+
+  .metric-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+  }
+
+  .metric-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+
+  .metric-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .metric-unit {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-muted);
+    margin-left: 3px;
+  }
+
+  .metric-trend {
+    font-size: 12px;
+    color: var(--accent-teal);
+    margin-top: 6px;
+    font-family: var(--font-mono);
+  }
+
+  .metric-trend.bad { color: var(--accent-coral); }
+
+  .code-block {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.7;
+    color: #c9c5bc;
+    overflow-x: auto;
+    margin: 24px 0;
+    max-width: 680px;
+  }
+
+  .code-block .kw { color: var(--accent-purple); }
+  .code-block .fn { color: var(--accent-blue); }
+  .code-block .cm { color: var(--text-dim); }
+  .code-block .hi { color: var(--accent-amber); }
+
+  .timeline {
+    position: relative;
+    margin: 48px 0;
+  }
+
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 20px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: linear-gradient(to bottom, var(--accent-teal), transparent);
+  }
+
+  .timeline-item {
+    padding-left: 56px;
+    margin-bottom: 36px;
+    position: relative;
+  }
+
+  .timeline-dot {
+    position: absolute;
+    left: 12px;
+    top: 6px;
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    border: 1px solid var(--border-accent);
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--accent-teal);
+  }
+
+  .tl-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+
+  .tl-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .tl-desc {
+    font-size: 13px;
+    color: var(--text-muted);
+    max-width: 560px;
+    line-height: 1.65;
+    margin: 0;
+  }
+
+  .vis-wrap {
+    margin: 40px 0;
+  }
+
+  .memory-diagram {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    overflow: hidden;
+  }
+
+  .matrix-grid {
+    display: grid;
+    gap: 3px;
+    margin: 0 auto;
+  }
+
+  .matrix-cell {
+    width: 32px;
+    height: 32px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    transition: all 0.3s ease;
+  }
+
+  .final-summary {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 40px;
+    margin: 48px 0;
+  }
+
+  table.perf-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    margin: 32px 0;
+  }
+
+  .perf-table th {
+    text-align: left;
+    color: var(--text-dim);
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .perf-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+    vertical-align: middle;
+  }
+
+  .perf-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .perf-table .best { color: var(--accent-teal); font-weight: 500; }
+  .perf-table .worst { color: var(--accent-coral); }
+
+  .bar-inline {
+    display: inline-block;
+    height: 6px;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-left: 8px;
+  }
+
+  .tag-pill {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    border-radius: 20px;
+    padding: 3px 10px;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+  }
+
+  .pill-teal { background: rgba(45,203,160,0.1); color: var(--accent-teal); border: 1px solid rgba(45,203,160,0.2); }
+  .pill-amber { background: rgba(245,166,35,0.1); color: var(--accent-amber); border: 1px solid rgba(245,166,35,0.2); }
+  .pill-coral { background: rgba(255,107,74,0.1); color: var(--accent-coral); border: 1px solid rgba(255,107,74,0.2); }
+  .pill-purple { background: rgba(157,127,245,0.1); color: var(--accent-purple); border: 1px solid rgba(157,127,245,0.2); }
+  .pill-blue { background: rgba(91,156,246,0.1); color: var(--accent-blue); border: 1px solid rgba(91,156,246,0.2); }
+
+  footer {
+    padding: 48px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 700px) {
+    .hero, main { padding-left: 20px; padding-right: 20px; }
+    .two-col { grid-template-columns: 1fr; }
+    .hero h1 { font-size: 32px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-grid"></div>
+  <div class="hero-tag">Systems Performance · Raspberry Pi 5 · Neon SIMD</div>
+  <h1>Taming the Cache:<br><em>A Journey Through</em><br>GEMM Optimization</h1>
+  <p class="hero-sub">From 45% cache miss catastrophe to SIMD-accelerated efficiency — every decision documented.</p>
+  <div class="hero-meta">
+    <div class="meta-chip"><div class="meta-chip-dot"></div>Raspberry Pi 5 · Cortex-A76</div>
+    <div class="meta-chip"><div class="meta-chip-dot"></div>ARM Neon SIMD</div>
+    <div class="meta-chip"><div class="meta-chip-dot"></div>5 optimization approaches</div>
+  </div>
+  <div class="hero-stat-row">
+    <div class="hero-stat">
+      <div class="hero-stat-label">Naive latency</div>
+      <div class="hero-stat-value">98.7<span class="hero-stat-unit">s</span></div>
+      <div class="hero-stat-sub">Baseline — our starting point</div>
+    </div>
+    <div class="hero-stat">
+      <div class="hero-stat-label">Best latency</div>
+      <div class="hero-stat-value">2.81<span class="hero-stat-unit">s</span></div>
+      <div class="improvement-badge">35x faster</div>
+    </div>
+    <div class="hero-stat">
+      <div class="hero-stat-label">Cache miss: start</div>
+      <div class="hero-stat-value">45.3<span class="hero-stat-unit">%</span></div>
+      <div class="hero-stat-sub">Nearly half all accesses miss</div>
+    </div>
+    <div class="hero-stat">
+      <div class="hero-stat-label">Cache miss: tiled</div>
+      <div class="hero-stat-value">1.20<span class="hero-stat-unit">%</span></div>
+      <div class="improvement-badge">38x improvement</div>
+    </div>
+  </div>
+</section>
+
+<main>
+
+<!-- INTRO -->
+<section class="section">
+  <div class="section-label" style="color: var(--accent-teal)">Introduction</div>
+  <h2>Why GEMM exposes everything wrong with your memory access pattern</h2>
+  <p>General Matrix Multiplication (GEMM) — computing C = A × B — is among the most fundamental operations in computing. It drives deep learning inference, scientific simulation, graphics pipelines, and signal processing. But despite its apparent simplicity, a naive implementation on modern hardware can be devastatingly slow.</p>
+  <p>The culprit is the memory hierarchy. Modern processors are fast; their caches are small; DRAM is slow. A naive GEMM thrashes the cache spectacularly. This post documents exactly what happens when you take that naive code and systematically fix it — measured on a Raspberry Pi 5 with ARM Cortex-A76 cores, using hardware performance counters and Neon SIMD intrinsics.</p>
+  <div class="callout">
+    <p>"The memory wall is real. Every algorithm you write is negotiating with the cache — whether you know it or not."</p>
+  </div>
+  <p>We explored five distinct approaches: naive, loop-reordered, scalar tiling at four block sizes, and SIMD-accelerated tiling at the same four block sizes. The results tell a clear, quantitative story.</p>
+</section>
+
+<!-- APPROACH 1: NAIVE -->
+<section class="section">
+  <div class="section-number">01</div>
+  <div class="section-label" style="color: var(--accent-coral)">The Starting Point</div>
+  <h2>Naive GEMM — A Cache Demolition Derby</h2>
+  <p>The straightforward three-loop formulation iterates i over rows of A, j over columns of B, and k over the shared dimension. The innermost access pattern for B is <code style="color:var(--accent-amber);font-family:var(--font-mono);font-size:13px">B[k][j]</code> — stepping through an entire column, one element per row. In row-major memory layout, this is the worst possible access: every element is a full row-stride apart, virtually guaranteed to be a cache miss.</p>
+
+  <div class="code-block">
+<span class="cm">// Naive: i → j → k (column-major access on B)</span>
+<span class="kw">for</span> (<span class="kw">int</span> i = 0; i &lt; N; i++)
+  <span class="kw">for</span> (<span class="kw">int</span> j = 0; j &lt; N; j++)
+    <span class="kw">for</span> (<span class="kw">int</span> k = 0; k &lt; N; k++)
+      C[i][j] += A[i][k] * <span class="hi">B[k][j]</span>; <span class="cm">// ← cache hostile!</span>
+  </div>
+
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-label">Latency</div>
+      <div class="metric-value">98.7<span class="metric-unit">s</span></div>
+      <div class="metric-trend bad">Baseline</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Cache Miss Rate</div>
+      <div class="metric-value">45.3<span class="metric-unit">%</span></div>
+      <div class="metric-trend bad">Nearly 1 in 2 accesses</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">IPC</div>
+      <div class="metric-value">0.218</div>
+      <div class="metric-trend bad">CPU starved for data</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Cache Misses</div>
+      <div class="metric-value">9298<span class="metric-unit">M</span></div>
+      <div class="metric-trend bad">Billions of misses</div>
+    </div>
+  </div>
+
+  <div class="vis-wrap">
+    <div class="chart-card">
+      <div class="chart-title">Memory access pattern — B matrix (naive i→j→k ordering)</div>
+      <div id="naive-vis" style="display:flex; gap:32px; align-items:flex-start; flex-wrap:wrap; justify-content:center; padding: 16px 0;"></div>
+    </div>
+  </div>
+
+  <p>With a 45% cache miss rate, the processor spends most of its time waiting on DRAM. The IPC of 0.218 — barely a fifth of an instruction per cycle — tells the story: the CPU is almost entirely stalled. It's less a computation and more a waiting exercise.</p>
+
+  <div class="callout coral">
+    <p>At 45% miss rate, the Cortex-A76's out-of-order engine has almost nothing to speculatively execute. The memory bus is the bottleneck, not the arithmetic units.</p>
+  </div>
+</section>
+
+<!-- APPROACH 2: LOOP REORDERING -->
+<section class="section">
+  <div class="section-number">02</div>
+  <div class="section-label" style="color: var(--accent-amber)">Loop Reordering</div>
+  <h2>The 29× Fix That Took One Minute</h2>
+  <p>The fix is almost offensively simple: swap the j and k loops. This changes the innermost access to <code style="color:var(--accent-amber);font-family:var(--font-mono);font-size:13px">B[k][j]</code> traversed row-by-row — sequential memory — instead of column-by-column. The cache prefetcher can now do its job.</p>
+
+  <div class="code-block">
+<span class="cm">// Reordered: i → k → j (row-major access on B)</span>
+<span class="kw">for</span> (<span class="kw">int</span> i = 0; i &lt; N; i++)
+  <span class="kw">for</span> (<span class="kw">int</span> k = 0; k &lt; N; k++)
+    <span class="kw">for</span> (<span class="kw">int</span> j = 0; j &lt; N; j++)
+      C[i][j] += A[i][k] * <span class="hi">B[k][j]</span>; <span class="cm">// ← now cache friendly!</span>
+  </div>
+
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-label">Latency</div>
+      <div class="metric-value">3.40<span class="metric-unit">s</span></div>
+      <div class="metric-trend">29× faster than naive</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Cache Miss Rate</div>
+      <div class="metric-value">4.03<span class="metric-unit">%</span></div>
+      <div class="metric-trend">From 45.3% — 11× lower</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">IPC</div>
+      <div class="metric-value">1.192</div>
+      <div class="metric-trend">5.5× more efficient</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Cache Misses</div>
+      <div class="metric-value">173<span class="metric-unit">M</span></div>
+      <div class="metric-trend">54× fewer misses</div>
+    </div>
+  </div>
+
+  <div class="chart-card" style="margin: 40px 0;">
+    <div class="chart-title">Naive vs Loop Reordering — all metrics comparison</div>
+    <div style="position:relative; width:100%; height:280px;">
+      <canvas id="reorderChart" role="img" aria-label="Bar chart comparing naive versus loop reordering across four metrics">Naive vs reordering: latency 98.7s vs 3.4s; IPC 0.218 vs 1.192; cache miss rate 45.3% vs 4.0%.</canvas>
+    </div>
+  </div>
+
+  <p>This single change — reordering two lines — produced a 29× speedup and an 11× improvement in cache hit rate. It's the clearest demonstration that algorithmic memory access patterns matter more than microarchitectural tricks. But 4% miss rate still leaves room for improvement.</p>
+</section>
+
+<!-- APPROACH 3: TILING -->
+<section class="section">
+  <div class="section-number">03</div>
+  <div class="section-label" style="color: var(--accent-blue)">Cache-Aware Tiling</div>
+  <h2>Blocking for the L1/L2 Cache Hierarchy</h2>
+  <p>Loop reordering helped A and B considerably, but the update <code style="color:var(--accent-amber);font-family:var(--font-mono);font-size:13px">C[i][j]</code> still scatters writes across a large matrix. Tiling (blocking) constrains the working set to fit within the cache at any moment — the core idea is to process small B×B sub-matrices at a time, so all three matrices A, B, and C stay hot in cache during computation of that tile.</p>
+
+  <div class="code-block">
+<span class="cm">// Tiled: 6 nested loops — tiles then elements</span>
+<span class="kw">for</span> (ii = 0; ii &lt; N; ii += BS)
+  <span class="kw">for</span> (kk = 0; kk &lt; N; kk += BS)
+    <span class="kw">for</span> (jj = 0; jj &lt; N; jj += BS)
+      <span class="kw">for</span> (i = ii; i &lt; ii+BS; i++)
+        <span class="kw">for</span> (k = kk; k &lt; kk+BS; k++)
+          <span class="kw">for</span> (j = jj; j &lt; jj+BS; j++)
+            C[i][j] += A[i][k] * <span class="hi">B[k][j]</span>;
+  </div>
+
+  <p>We tested four block sizes (BS = 4, 8, 16, 32) to understand how different tile sizes interact with the L1 and L2 cache sizes on the Cortex-A76.</p>
+
+  <div class="chart-card" style="margin: 40px 0;">
+    <div class="chart-title">Scalar tiling — latency and cache miss rate by block size</div>
+    <div style="position:relative; width:100%; height:300px;">
+      <canvas id="tilingChart" role="img" aria-label="Grouped bar chart showing latency and cache miss rate for four block sizes in scalar tiling">Block size 4: 8.27s, 1.2% miss. BS=8: 5.2s, 1.9%. BS=16: 4.3s, 8.6%. BS=32: 2.82s, 8.5%.</canvas>
+    </div>
+  </div>
+
+  <p>The pattern is interesting: smaller block sizes (BS=4, BS=8) achieve dramatically lower cache miss rates (1.2%–1.9%) because the tile fits comfortably in L1 cache. Larger blocks (BS=16, BS=32) see miss rates creep back up to 8–9% as tiles spill into L2, yet still run faster — because the arithmetic intensity improvement outweighs the cache penalty. BS=32 at 2.82 seconds represents a 35× speedup over naive.</p>
+
+  <div class="callout blue">
+    <p>At BS=4, the cache miss rate drops to 1.2% — 38× better than naive. The working set (3 tiles of 4×4 floats = 192 bytes) fits entirely in L1 with room to spare.</p>
+  </div>
+
+  <h3>The IPC jump tells the story</h3>
+  <p>Where loop reordering brought IPC from 0.22 to 1.19, tiling pushes it to 3.49 at BS=4. The CPU can finally keep its execution units fed. The arithmetic units are no longer waiting for cache fills — they're computing.</p>
+
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-label">BS=4 — Miss Rate</div>
+      <div class="metric-value">1.20<span class="metric-unit">%</span></div>
+      <div class="metric-trend">Best cache efficiency</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">BS=4 — IPC</div>
+      <div class="metric-value">3.49</div>
+      <div class="metric-trend">16× vs naive</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">BS=32 — Latency</div>
+      <div class="metric-value">2.82<span class="metric-unit">s</span></div>
+      <div class="metric-trend">Best raw speed</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">BS=32 — IPC</div>
+      <div class="metric-value">2.97</div>
+      <div class="metric-trend">13.6× vs naive</div>
+    </div>
+  </div>
+</section>
+
+<!-- APPROACH 4: SIMD -->
+<section class="section">
+  <div class="section-number">04</div>
+  <div class="section-label" style="color: var(--accent-purple)">NEON SIMD Vectorization</div>
+  <h2>Exploiting the Cortex-A76's Neon Engine</h2>
+  <p>Tiling improved cache behavior. But each multiply-accumulate still operated on single floats. The Raspberry Pi 5's Cortex-A76 cores have 128-bit Neon SIMD units capable of processing 4 single-precision floats simultaneously. Adding SIMD to our tiled loop should multiply throughput — if we can keep the units fed.</p>
+
+  <div class="code-block">
+<span class="cm">// Neon SIMD inner loop (BS=8 example)</span>
+<span class="fn">float32x4_t</span> va = <span class="fn">vdupq_n_f32</span>(A[i][k]);
+<span class="fn">float32x4_t</span> vb = <span class="fn">vld1q_f32</span>(&B[k][j]);
+<span class="fn">float32x4_t</span> vc = <span class="fn">vld1q_f32</span>(&C[i][j]);
+vc = <span class="fn">vfmaq_f32</span>(vc, va, vb); <span class="cm">// fused multiply-add × 4</span>
+<span class="fn">vst1q_f32</span>(&C[i][j], vc);
+  </div>
+
+  <div class="chart-card" style="margin: 40px 0;">
+    <div class="chart-title">Scalar tiling vs NEON SIMD tiling — latency by block size</div>
+    <div style="position:relative; width:100%; height:280px;">
+      <canvas id="simdChart" role="img" aria-label="Grouped bar chart comparing scalar and SIMD tiling latencies across four block sizes">Scalar vs SIMD: BS4 8.27 vs 5.06s; BS8 5.20 vs 4.34s; BS16 4.30 vs 3.92s; BS32 2.82 vs 3.06s.</canvas>
+    </div>
+  </div>
+
+  <p>SIMD brings consistent latency improvements across BS=4, 8, and 16. Interestingly, at BS=32 the SIMD version is marginally slower — likely due to increased register pressure and slightly worse cache behavior from SIMD loads that span cache line boundaries at that tile size.</p>
+
+  <h3>The IPC–latency tradeoff</h3>
+  <p>SIMD introduces a subtle dynamic: instructions become wider but the IPC metric (instructions per cycle) can appear lower because each vector instruction does more work per "instruction" counted by the hardware. The BS=4 SIMD case nearly matches scalar IPC (3.49 vs 3.49) while running in 61% of the time — pure throughput win.</p>
+
+  <div class="callout purple">
+    <p>The best latency SIMD result is BS=4 at 5.06s vs BS=4 scalar at 8.27s — a 1.6× speedup from vectorization alone, on top of tiling's gains over loop reordering.</p>
+  </div>
+
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-label">SIMD BS=4 Latency</div>
+      <div class="metric-value">5.06<span class="metric-unit">s</span></div>
+      <div class="metric-trend">1.6× vs scalar BS=4</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">SIMD BS=4 Miss Rate</div>
+      <div class="metric-value">1.55<span class="metric-unit">%</span></div>
+      <div class="metric-trend">Near-identical to scalar</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">SIMD BS=16 Latency</div>
+      <div class="metric-value">3.92<span class="metric-unit">s</span></div>
+      <div class="metric-trend">vs scalar 4.30s</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">SIMD BS=8 IPC</div>
+      <div class="metric-value">2.63</div>
+      <div class="metric-trend">More work per instr.</div>
+    </div>
+  </div>
+</section>
+
+<!-- FULL COMPARISON -->
+<section class="section">
+  <div class="section-number">05</div>
+  <div class="section-label" style="color: var(--accent-teal)">Complete Picture</div>
+  <h2>All Methods, All Metrics</h2>
+
+  <div class="chart-card" style="margin: 32px 0;">
+    <div class="chart-title">Latency across all methods (lower is better)</div>
+    <div style="position:relative; width:100%; height:420px;">
+      <canvas id="allLatencyChart" role="img" aria-label="Horizontal bar chart of all 10 methods sorted by latency">Naive: 98.7s. All optimized methods range 2.82s to 8.27s.</canvas>
+    </div>
+  </div>
+
+  <div class="chart-card" style="margin: 32px 0;">
+    <div class="chart-title">Cache miss rate vs IPC — efficiency landscape</div>
+    <div style="position:relative; width:100%; height:320px;">
+      <canvas id="scatterChart" role="img" aria-label="Scatter plot of cache miss rate versus IPC for all methods">Lower-left is better cache, higher IPC is better parallelism. Tiled methods cluster in lower-right region.</canvas>
+    </div>
+  </div>
+
+  <h3>Full results table</h3>
+  <table class="perf-table">
+    <thead>
+      <tr>
+        <th>Method</th>
+        <th>Latency (s)</th>
+        <th>IPC</th>
+        <th>Miss Rate (%)</th>
+        <th>vs Naive</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="tag-pill pill-coral">Naive</span></td>
+        <td class="worst">98.73</td>
+        <td class="worst">0.218</td>
+        <td class="worst">45.25%</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td><span class="tag-pill pill-amber">Loop Reorder</span></td>
+        <td>3.40</td>
+        <td>1.192</td>
+        <td>4.03%</td>
+        <td>29× faster</td>
+      </tr>
+      <tr>
+        <td><span class="tag-pill pill-blue">Scalar BS=4</span></td>
+        <td>8.27</td>
+        <td>3.489</td>
+        <td class="best">1.20%</td>
+        <td>12× faster</td>
+      </tr>
+      <tr>
+        <td><span class="tag-pill pill-blue">Scalar BS=8</span></td>
+        <td>5.20</td>
+        <td>3.028</td>
+        <td>1.90%</td>
+        <td>19× faster</td>
+      </tr>
+      <tr>
+        <td><span class="tag-pill pill-blue">Scalar BS=16</span></td>
+        <td>4.30</td>
+        <td>2.473</td>
+        <td>8.57%</td>
+        <td>23× faster</td>
+      </tr>
+      <tr>
+        <td><span class="tag-pill pill-blue">Scalar BS=32</span></td>
+        <td class="best">2.82</td>
+        <td>2.972</td>
+        <td>8.50%</td>
+        <td><strong>35× faster</strong></td>
+      </tr>
+      <tr>
+        <td><span class="tag-pill pill-purple">SIMD BS=4</span></td>
+        <td>5.06</td>
+        <td>3.489</td>
+        <td>1.55%</td>
+        <td>20× faster</td>
+      </tr>
+      <tr>
+        <td><span class="tag-pill pill-purple">SIMD BS=8</span></td>
+        <td>4.34</td>
+        <td>2.631</td>
+        <td>1.96%</td>
+        <td>23× faster</td>
+      </tr>
+      <tr>
+        <td><span class="tag-pill pill-purple">SIMD BS=16</span></td>
+        <td>3.92</td>
+        <td>2.325</td>
+        <td>8.66%</td>
+        <td>25× faster</td>
+      </tr>
+      <tr>
+        <td><span class="tag-pill pill-purple">SIMD BS=32</span></td>
+        <td>3.06</td>
+        <td>2.646</td>
+        <td>8.57%</td>
+        <td>32× faster</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- TAKEAWAYS -->
+<section class="section" style="border-bottom: none;">
+  <div class="section-label" style="color: var(--accent-teal)">Conclusions</div>
+  <h2>What the Data Actually Teaches Us</h2>
+
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="timeline-dot">1</div>
+      <div class="tl-label">Lesson one</div>
+      <div class="tl-title">Memory access patterns are the first optimization frontier</div>
+      <p class="tl-desc">A single loop reorder — zero algorithmic complexity change — delivered a 29× speedup. No compiler flag, no hardware trick, no clever math. Just fixing the access order. This is the most dramatic result in the entire experiment.</p>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-dot">2</div>
+      <div class="tl-label">Lesson two</div>
+      <div class="tl-title">Cache miss rate and latency are not the same thing</div>
+      <p class="tl-desc">BS=4 scalar achieves the best cache miss rate (1.20%) but is slower than BS=32 scalar (2.82s). Larger tiles amortize loop overhead and improve arithmetic density even as they stress the cache more. Optimizing for cache miss rate alone is incomplete.</p>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-dot">3</div>
+      <div class="tl-label">Lesson three</div>
+      <div class="tl-title">SIMD is powerful but not unconditional</div>
+      <p class="tl-desc">SIMD helps at BS=4/8/16 but is marginally counterproductive at BS=32. Vector loads and register pressure interact with tile granularity. Tuning block size and SIMD width together is essential — one cannot be optimized in isolation.</p>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-dot">4</div>
+      <div class="tl-label">Lesson four</div>
+      <div class="tl-title">IPC is a signal, not a goal</div>
+      <p class="tl-desc">Naive GEMM has an IPC of 0.218 — the CPU is almost entirely stalled. SIMD tiling at BS=4 reaches IPC 3.49. But SIMD's wide operations make each "instruction" count more work, so IPC comparisons across scalar/SIMD are apples-and-oranges. Always look at wall-clock latency.</p>
+    </div>
+  </div>
+
+  <div class="final-summary">
+    <div class="chart-title" style="margin-bottom: 24px;">Cumulative improvement journey</div>
+    <div style="position:relative; width:100%; height:240px;">
+      <canvas id="journeyChart" role="img" aria-label="Line chart showing latency reduction from naive through each optimization stage">Latency drops from 98.7s naive to 3.4s loop reorder, then tiling brings it to 2.82s scalar and 3.06s SIMD.</canvas>
+    </div>
+  </div>
+
+  <p>The journey from 98.7 seconds to under 3 is almost entirely a story of feeding the cache correctly. SIMD helped, but the single largest gain came from a two-line fix that made the memory access pattern sequential. Modern hardware is extraordinary — but only if you let it work with the cache, not against it.</p>
+
+  <div class="callout" style="margin-top: 40px;">
+    <p>The Raspberry Pi 5's Cortex-A76 is a capable out-of-order superscalar core — but even it cannot overcome a 45% cache miss rate. Respect the cache hierarchy, and the hardware will reward you generously.</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  Benchmarked on Raspberry Pi 5 · ARM Cortex-A76 · Neon SIMD · All timings via perf hardware counters
+</footer>
+
+<script>
+/* ---- Naive access vis ---- */
+(function(){
+  const wrap = document.getElementById('naive-vis');
+  const N = 6;
+
+  function makeMatrix(label, color, accessFn, highlight) {
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;';
+    const lbl = document.createElement('div');
+    lbl.textContent = label;
+    lbl.style.cssText = 'font-family:var(--font-mono);font-size:11px;color:var(--text-dim);letter-spacing:0.08em;';
+    const grid = document.createElement('div');
+    grid.style.cssText = `display:grid;grid-template-columns:repeat(${N},28px);gap:2px;`;
+    for(let r=0;r<N;r++){
+      for(let c=0;c<N;c++){
+        const cell = document.createElement('div');
+        cell.style.cssText='width:28px;height:28px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:9px;';
+        const isHighlight = highlight(r, c);
+        if(isHighlight === 'hot') {
+          cell.style.background = 'rgba(45,203,160,0.35)';
+          cell.style.color = '#2dcba0';
+          cell.style.border = '1px solid rgba(45,203,160,0.5)';
+        } else if(isHighlight === 'miss') {
+          cell.style.background = 'rgba(255,107,74,0.3)';
+          cell.style.color = '#ff6b4a';
+          cell.style.border = '1px solid rgba(255,107,74,0.4)';
+        } else {
+          cell.style.background = 'rgba(255,255,255,0.04)';
+          cell.style.color = 'rgba(255,255,255,0.2)';
+          cell.style.border = '1px solid rgba(255,255,255,0.06)';
+        }
+        grid.appendChild(cell);
+      }
+    }
+    div.appendChild(lbl);
+    div.appendChild(grid);
+    return div;
+  }
+
+  const legend = document.createElement('div');
+  legend.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;justify-content:center;padding-top:16px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);';
+  legend.innerHTML = `
+    <span style="display:flex;align-items:center;gap:6px;"><span style="width:12px;height:12px;border-radius:2px;background:rgba(45,203,160,0.35);border:1px solid rgba(45,203,160,0.5);display:inline-block;"></span>Cache hit (sequential)</span>
+    <span style="display:flex;align-items:center;gap:6px;"><span style="width:12px;height:12px;border-radius:2px;background:rgba(255,107,74,0.3);border:1px solid rgba(255,107,74,0.4);display:inline-block;"></span>Cache miss (stride access)</span>
+  `;
+
+  const container = document.createElement('div');
+  container.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:16px;';
+  const mats = document.createElement('div');
+  mats.style.cssText = 'display:flex;gap:48px;flex-wrap:wrap;justify-content:center;';
+
+  const j = 2;
+  mats.appendChild(makeMatrix('A[i][k] — row sequential', 'teal', null, (r,c) => r===2?'hot':false));
+  mats.appendChild(makeMatrix('B[k][j] — column stride (naive)', null, null, (r,c) => c===j?'miss':false));
+  mats.appendChild(makeMatrix('B[k][j] — row sequential (fixed)', null, null, (r,c) => r===2?'hot':false));
+
+  container.appendChild(mats);
+  container.appendChild(legend);
+  wrap.appendChild(container);
+})();
+
+/* ---- Chart colors ---- */
+const teal = 'rgba(45,203,160,0.8)';
+const tealBorder = '#2dcba0';
+const amber = 'rgba(245,166,35,0.8)';
+const amberBorder = '#f5a623';
+const coral = 'rgba(255,107,74,0.7)';
+const coralBorder = '#ff6b4a';
+const blue = 'rgba(91,156,246,0.8)';
+const blueBorder = '#5b9cf6';
+const purple = 'rgba(157,127,245,0.8)';
+const purpleBorder = '#9d7ff5';
+const gridColor = 'rgba(255,255,255,0.06)';
+const tickColor = '#4a4845';
+
+const baseOpts = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      backgroundColor: '#1a1a20',
+      borderColor: 'rgba(255,255,255,0.12)',
+      borderWidth: 1,
+      titleColor: '#e8e6e0',
+      bodyColor: '#7a7870',
+      padding: 10,
+    }
+  },
+  scales: {
+    x: {
+      grid: { color: gridColor },
+      ticks: { color: tickColor, font: { family: "'IBM Plex Mono'", size: 11 } },
+    },
+    y: {
+      grid: { color: gridColor },
+      ticks: { color: tickColor, font: { family: "'IBM Plex Mono'", size: 11 } },
+    }
+  }
+};
+
+/* Reorder chart */
+new Chart(document.getElementById('reorderChart'), {
+  type: 'bar',
+  data: {
+    labels: ['Latency (s)', 'IPC', 'Cache Miss Rate (%)'],
+    datasets: [
+      { label: 'Naive', data: [98.73, 0.218, 45.25], backgroundColor: coral, borderColor: coralBorder, borderWidth: 1 },
+      { label: 'Loop Reorder', data: [3.40, 1.192, 4.03], backgroundColor: teal, borderColor: tealBorder, borderWidth: 1 }
+    ]
+  },
+  options: {
+    ...baseOpts,
+    plugins: {
+      ...baseOpts.plugins,
+      legend: { display: true, labels: { color: '#7a7870', font: { family: "'IBM Plex Mono'", size: 11 }, boxWidth: 12, boxHeight: 12 } }
+    },
+    scales: {
+      ...baseOpts.scales,
+      y: { ...baseOpts.scales.y, type: 'logarithmic', title: { display: true, text: 'Value (log scale)', color: tickColor, font: { family: "'IBM Plex Mono'", size: 10 } } }
+    }
+  }
+});
+
+/* Tiling chart */
+new Chart(document.getElementById('tilingChart'), {
+  type: 'bar',
+  data: {
+    labels: ['BS=4', 'BS=8', 'BS=16', 'BS=32'],
+    datasets: [
+      { label: 'Latency (s)', data: [8.27, 5.20, 4.30, 2.82], backgroundColor: blue, borderColor: blueBorder, borderWidth: 1, yAxisID: 'y' },
+      { label: 'Miss Rate (%)', data: [1.20, 1.90, 8.57, 8.50], backgroundColor: amber, borderColor: amberBorder, borderWidth: 1, yAxisID: 'y2' }
+    ]
+  },
+  options: {
+    ...baseOpts,
+    plugins: {
+      ...baseOpts.plugins,
+      legend: { display: true, labels: { color: '#7a7870', font: { family: "'IBM Plex Mono'", size: 11 }, boxWidth: 12, boxHeight: 12 } }
+    },
+    scales: {
+      x: baseOpts.scales.x,
+      y: { ...baseOpts.scales.y, position: 'left', title: { display: true, text: 'Latency (s)', color: tickColor, font: { size: 10 } } },
+      y2: { ...baseOpts.scales.y, position: 'right', title: { display: true, text: 'Miss Rate (%)', color: tickColor, font: { size: 10 } }, grid: { drawOnChartArea: false } }
+    }
+  }
+});
+
+/* SIMD chart */
+new Chart(document.getElementById('simdChart'), {
+  type: 'bar',
+  data: {
+    labels: ['BS=4', 'BS=8', 'BS=16', 'BS=32'],
+    datasets: [
+      { label: 'Scalar', data: [8.27, 5.20, 4.30, 2.82], backgroundColor: blue, borderColor: blueBorder, borderWidth: 1 },
+      { label: 'NEON SIMD', data: [5.06, 4.34, 3.92, 3.06], backgroundColor: purple, borderColor: purpleBorder, borderWidth: 1 }
+    ]
+  },
+  options: {
+    ...baseOpts,
+    plugins: {
+      ...baseOpts.plugins,
+      legend: { display: true, labels: { color: '#7a7870', font: { family: "'IBM Plex Mono'", size: 11 }, boxWidth: 12, boxHeight: 12 } }
+    },
+    scales: {
+      x: baseOpts.scales.x,
+      y: { ...baseOpts.scales.y, title: { display: true, text: 'Latency (s)', color: tickColor, font: { size: 10 } } }
+    }
+  }
+});
+
+/* All latency horizontal bar */
+new Chart(document.getElementById('allLatencyChart'), {
+  type: 'bar',
+  data: {
+    labels: ['Naive','Loop Reorder','SIMD BS=4','SIMD BS=8','Scalar BS=4','SIMD BS=16','Scalar BS=8','SIMD BS=32','Scalar BS=16','Scalar BS=32'],
+    datasets: [{
+      label: 'Latency (s)',
+      data: [98.73, 3.40, 5.06, 4.34, 8.27, 3.92, 5.20, 3.06, 4.30, 2.82],
+      backgroundColor: [
+        coral,
+        amber,
+        purple,purple,
+        blue,
+        purple,
+        blue,
+        purple,
+        blue,blue
+      ],
+      borderColor: [
+        coralBorder, amberBorder,
+        purpleBorder,purpleBorder,
+        blueBorder,
+        purpleBorder,
+        blueBorder,
+        purpleBorder,
+        blueBorder,blueBorder
+      ],
+      borderWidth: 1
+    }]
+  },
+  options: {
+    ...baseOpts,
+    indexAxis: 'y',
+    scales: {
+      x: { ...baseOpts.scales.x, title: { display: true, text: 'Latency (seconds)', color: tickColor, font: { size: 10 } } },
+      y: { ...baseOpts.scales.y, ticks: { ...baseOpts.scales.y.ticks, font: { family: "'IBM Plex Mono'", size: 10 } } }
+    }
+  }
+});
+
+/* Scatter: miss rate vs IPC */
+new Chart(document.getElementById('scatterChart'), {
+  type: 'scatter',
+  data: {
+    datasets: [
+      {
+        label: 'Naive',
+        data: [{x:45.25, y:0.218}],
+        backgroundColor: coral,
+        borderColor: coralBorder,
+        pointRadius: 10,
+        borderWidth: 1.5
+      },
+      {
+        label: 'Loop Reorder',
+        data: [{x:4.03, y:1.192}],
+        backgroundColor: amber,
+        borderColor: amberBorder,
+        pointRadius: 10,
+        borderWidth: 1.5
+      },
+      {
+        label: 'Scalar Tiling',
+        data: [
+          {x:1.20, y:3.489},
+          {x:1.90, y:3.028},
+          {x:8.57, y:2.473},
+          {x:8.50, y:2.972}
+        ],
+        backgroundColor: blue,
+        borderColor: blueBorder,
+        pointRadius: 8,
+        borderWidth: 1.5
+      },
+      {
+        label: 'SIMD Tiling',
+        data: [
+          {x:1.55, y:3.489},
+          {x:1.96, y:2.631},
+          {x:8.66, y:2.325},
+          {x:8.57, y:2.646}
+        ],
+        backgroundColor: purple,
+        borderColor: purpleBorder,
+        pointRadius: 8,
+        borderWidth: 1.5,
+        pointStyle: 'triangle'
+      }
+    ]
+  },
+  options: {
+    ...baseOpts,
+    plugins: {
+      ...baseOpts.plugins,
+      legend: { display: true, labels: { color: '#7a7870', font: { family: "'IBM Plex Mono'", size: 11 }, boxWidth: 12, boxHeight: 12, usePointStyle: true } }
+    },
+    scales: {
+      x: { ...baseOpts.scales.x, title: { display: true, text: 'Cache Miss Rate (%)', color: tickColor, font: { size: 11 } } },
+      y: { ...baseOpts.scales.y, title: { display: true, text: 'IPC (instructions/cycle)', color: tickColor, font: { size: 11 } } }
+    }
+  }
+});
+
+/* Journey line chart */
+new Chart(document.getElementById('journeyChart'), {
+  type: 'line',
+  data: {
+    labels: ['Naive','Loop Reorder','Scalar BS=32','SIMD BS=16'],
+    datasets: [{
+      label: 'Latency (s)',
+      data: [98.73, 3.40, 2.82, 3.92],
+      borderColor: tealBorder,
+      backgroundColor: 'rgba(45,203,160,0.08)',
+      tension: 0.3,
+      fill: true,
+      pointBackgroundColor: tealBorder,
+      pointRadius: 6,
+      borderWidth: 2
+    }]
+  },
+  options: {
+    ...baseOpts,
+    scales: {
+      x: baseOpts.scales.x,
+      y: { ...baseOpts.scales.y, type: 'logarithmic', title: { display: true, text: 'Latency (s, log scale)', color: tickColor, font: { size: 10 } } }
+    }
+  }
+});
+</script>
+</body>
+</html>
